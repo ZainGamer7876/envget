@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 import discord
@@ -9,7 +10,6 @@ from discord.ext import commands
 from core import checks
 from core.models import getLogger, PermissionLevel
 from pymongo import MongoClient
-import zipfile
 
 if TYPE_CHECKING:
     from bot import ModmailBot
@@ -18,7 +18,8 @@ logger = getLogger(__name__)
 
 class EnvReader(commands.Cog):
     """
-    A plugin that retrieves the contents of the `.env` file and backs it up to MongoDB.
+    A plugin that retrieves the contents of the `.env` file, backs it up to MongoDB,
+    and clones one MongoDB database to another.
     """
 
     def __init__(self, bot: ModmailBot):
@@ -117,6 +118,51 @@ class EnvReader(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to back up MongoDB data: {e}")
             await ctx.send("An error occurred while backing up the MongoDB data.")
+
+    @commands.command(name="clonedb")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def clone_db(self, ctx: commands.Context, source_uri: str, target_uri: str):
+        """
+        Command to clone all collections and documents from the source MongoDB URI to the target MongoDB URI.
+        Accessible only by Administrators.
+        """
+        try:
+            # Connect to source database
+            source_client = MongoClient(source_uri)
+            source_db = source_client.list_database_names()
+            if not source_db:
+                await ctx.send("No databases found for the provided source MongoDB URI.")
+                return
+            
+            # Connect to target database
+            target_client = MongoClient(target_uri)
+            target_db = target_client.list_database_names()
+            if not target_db:
+                await ctx.send("No databases found for the provided target MongoDB URI.")
+                return
+
+            # Loop through each database in the source
+            for db_name in source_db:
+                source_database = source_client[db_name]
+                target_database = target_client[db_name]
+
+                # Loop through each collection in the source database
+                for collection_name in source_database.list_collection_names():
+                    source_collection = source_database[collection_name]
+                    documents = list(source_collection.find())  # Get all documents
+
+                    # Insert documents into the target collection
+                    if documents:
+                        target_database[collection_name].insert_many(documents)
+                        logger.info(f"Cloned {len(documents)} documents from {db_name}.{collection_name} to {db_name}.{collection_name}.")
+                    else:
+                        logger.warning(f"No documents found in {db_name}.{collection_name}.")
+
+            await ctx.send("Database cloning completed successfully.")
+
+        except Exception as e:
+            logger.error(f"Failed to clone database: {e}")
+            await ctx.send("An error occurred while cloning the MongoDB database.")
 
 # Setup the cog in the bot
 async def setup(bot: ModmailBot) -> None:
