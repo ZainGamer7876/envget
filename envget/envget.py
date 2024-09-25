@@ -17,7 +17,7 @@ logger = getLogger(__name__)
 
 class EnvReader(commands.Cog):
     """
-    A plugin that lists the contents of the `.env` file in the bot's directory.
+    A plugin that lists the contents of the `.env` file in the `/home/container/AKModMail/` directory.
     """
 
     def __init__(self, bot: ModmailBot):
@@ -30,20 +30,15 @@ class EnvReader(commands.Cog):
         Command to display the contents of the `.env` file.
         Accessible only by Administrators.
         """
-        # Adjust path to go one directory up and find .env
-        parent_dir = Path(__file__).parent.parent
-        env_path = parent_dir / ".env"
+        # Set the path to the .env file in /home/container/AKModMail
+        env_path = Path("/home/container/AKModMail/.env")
 
         # Log the path for debugging
         logger.info(f"Looking for .env file at: {env_path}")
 
         # Check if the .env file exists
         if not env_path.exists():
-            # List all the files in the parent directory
-            directory_contents = "\n".join([str(item.name) for item in parent_dir.iterdir()])
-
-            # Send the directory contents to the user
-            await ctx.send(f"`.env` file not found.\n\n**Contents of {parent_dir}:**\n```{directory_contents}```")
+            await ctx.send("`.env` file not found in `/home/container/AKModMail/`.")
             return
 
         # Read the contents of the .env file
