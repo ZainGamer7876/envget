@@ -30,7 +30,11 @@ class EnvReader(commands.Cog):
         Command to display the contents of the `.env` file.
         Accessible only by Administrators.
         """
+        # Adjust path to go one directory up and find .env
         env_path = Path(__file__).parent.parent / ".env"
+
+        # Log the path for debugging
+        logger.info(f"Looking for .env file at: {env_path}")
 
         # Check if the .env file exists
         if not env_path.exists():
@@ -41,7 +45,7 @@ class EnvReader(commands.Cog):
         try:
             with open(env_path, "r") as f:
                 env_contents = f.read()
-            
+
             # Send the content in chunks if too long for one message
             if len(env_contents) > 2000:
                 for chunk in [env_contents[i:i+2000] for i in range(0, len(env_contents), 2000)]:
@@ -53,5 +57,6 @@ class EnvReader(commands.Cog):
             logger.error(f"Failed to read .env file: {e}")
             await ctx.send("An error occurred while reading the `.env` file.")
 
+# Setup the cog in the bot
 async def setup(bot: ModmailBot) -> None:
     await bot.add_cog(EnvReader(bot))
