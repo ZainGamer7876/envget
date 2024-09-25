@@ -1,169 +1,141 @@
 from __future__ import annotations
 
 import os
-import json
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+import shutil
 import discord
 from discord.ext import commands
+from pymongo import MongoClient, errors
+import json
+import asyncio
+
 from core import checks
 from core.models import getLogger, PermissionLevel
-from pymongo import MongoClient
-
-if TYPE_CHECKING:
-    from bot import ModmailBot
 
 logger = getLogger(__name__)
 
-class EnvReader(commands.Cog):
+class EnvMongoManager(commands.Cog):
     """
-    A plugin that retrieves the contents of the `.env` file, backs it up to MongoDB,
-    and clones one MongoDB database to another.
+    A plugin that manages the .env file and MongoDB backups.
     """
 
-    def __init__(self, bot: ModmailBot):
-        self.bot: ModmailBot = bot
+    def __init__(self, bot):
+        self.bot = bot
 
     @commands.command(name="getenv")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
     async def getenv(self, ctx: commands.Context):
         """
-        Command to send the contents of the `.env` file as a ZIP file.
+        Command to display the contents of the `.env` file.
         Accessible only by Administrators.
         """
-        # Set the path to the .env file in /home/container/AKModMail
         env_path = Path("/home/container/AKModMail/.env")
-
-        # Log the path for debugging
-        logger.info(f"Looking for .env file at: {env_path}")
 
         # Check if the .env file exists
         if not env_path.exists():
-            await ctx.send("`.env` file not found in `/home/container/AKModMail/`.")
+            await ctx.send("`.env` file not found.")
             return
 
-        # Create a ZIP file containing the .env file
-        zip_filename = "/home/container/AKModMail/env_backup.zip"
+        # Read the contents of the .env file
         try:
-            with zipfile.ZipFile(zip_filename, 'w') as zipf:
-                zipf.write(env_path, arcname=".env")  # Use arcname to store just the filename
-            logger.info("ZIP file created successfully.")
+            with open(env_path, "r") as f:
+                env_contents = f.read()
 
-            # Send the ZIP file to Discord
-            with open(zip_filename, 'rb') as zip_file:
-                await ctx.send(file=discord.File(zip_file, filename='env_backup.zip'))
-            
-            logger.info("ZIP file sent successfully.")
+            # Send the content in chunks if too long for one message
+            if len(env_contents) > 2000:
+                for chunk in [env_contents[i:i + 2000] for i in range(0, len(env_contents), 2000)]:
+                    await ctx.send(f"```env\n{chunk}```")
+            else:
+                await ctx.send(f"```env\n{env_contents}```")
 
         except Exception as e:
-            logger.error(f"Failed to create or send ZIP file: {e}")
-            await ctx.send("An error occurred while creating or sending the ZIP file.")
+            logger.error(f"Failed to read .env file: {e}")
+            await ctx.send("An error occurred while reading the `.env` file.")
 
     @commands.command(name="backupmongo")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
-    async def backup_mongo(self, ctx: commands.Context, mongo_uri: str):
+    async def backupmongo(self, ctx: commands.Context, mongo_uri: str):
         """
-        Command to back up the contents of a MongoDB database specified by the URI and send it as a ZIP file.
-        Accessible only by Administrators.
+        Command to backup MongoDB contents and send as a zip file.
+        Usage: .backupmongo <mongo_uri>
         """
-        # Connect to the specified MongoDB database
+        await ctx.send("Starting MongoDB backup...")
+
         try:
             client = MongoClient(mongo_uri)
-            db = client.list_database_names()  # Get all database names
-            if not db:
-                await ctx.send("No databases found for the provided MongoDB URI.")
-                return
-        except Exception as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
-            await ctx.send("An error occurred while connecting to MongoDB.")
-            return
+            db_names = client.list_database_names()
 
-        # Prepare to collect all data
-        backup_data = []
-        try:
-            for database_name in db:
-                database = client[database_name]
-                for collection_name in database.list_collection_names():
-                    collection = database[collection_name]
-                    documents = list(collection.find())  # Retrieve all documents
-                    for doc in documents:
-                        # Add database and collection name to each document for context
-                        doc['_database'] = database_name
-                        doc['_collection'] = collection_name
-                        backup_data.append(doc)
-
-            if not backup_data:
-                await ctx.send("No data found in MongoDB to back up.")
-                return
-
-            # Create a JSON file from the backup data
-            json_filename = "/home/container/AKModMail/mongo_backup.json"
-            with open(json_filename, 'w') as json_file:
-                json.dump(backup_data, json_file, default=str)  # Use default=str to handle ObjectId and other non-serializable types
-
-            # Create a ZIP file containing the JSON backup
-            zip_filename = "/home/container/AKModMail/mongo_backup.zip"
+            # Create a zip file for backup
+            zip_filename = "mongodb_backup.zip"
             with zipfile.ZipFile(zip_filename, 'w') as zipf:
-                zipf.write(json_filename, arcname='mongo_backup.json')  # Store only the filename in the ZIP
-            
-            logger.info("MongoDB backup ZIP file created successfully.")
+                for db_name in db_names:
+                    db = client[db_name]
+                    collection_names = db.list_collection_names()
+                    for collection_name in collection_names:
+                        documents = db[collection_name].find()
+                        with open(f"{collection_name}.json", "w") as json_file:
+                            json.dump(list(documents), json_file)
+                        zipf.write(f"{collection_name}.json")
+                        os.remove(f"{collection_name}.json")  # Remove the json file after zipping
 
-            # Send the ZIP file to Discord
-            with open(zip_filename, 'rb') as zip_file:
-                await ctx.send(file=discord.File(zip_file, filename='mongo_backup.zip'))
-            
-            logger.info("MongoDB backup ZIP file sent successfully.")
+            await ctx.send(file=discord.File(zip_filename))
+            os.remove(zip_filename)  # Clean up the zip file after sending
 
+        except errors.ConfigurationError:
+            await ctx.send("Configuration Error: Please check your MongoDB URI format.")
+            logger.error("Configuration Error: Invalid MongoDB URI.")
+        except errors.OperationFailure as e:
+            if "authentication failed" in str(e):
+                await ctx.send("Authentication Error: Please check your MongoDB username and password.")
+                logger.error("Authentication Error: %s", e)
+            else:
+                await ctx.send(f"Operation Failed: {str(e)}")
+                logger.error("Operation Failure: %s", e)
         except Exception as e:
-            logger.error(f"Failed to back up MongoDB data: {e}")
-            await ctx.send("An error occurred while backing up the MongoDB data.")
+            await ctx.send("An error occurred while backing up MongoDB.")
+            logger.error(f"An unexpected error occurred: {e}")
 
     @commands.command(name="clonedb")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
-    async def clone_db(self, ctx: commands.Context, source_uri: str, target_uri: str):
+    async def clonedb(self, ctx: commands.Context, uri1: str, uri2: str):
         """
-        Command to clone all collections and documents from the source MongoDB URI to the target MongoDB URI.
-        Accessible only by Administrators.
+        Command to clone data from one MongoDB database to another.
+        Usage: .clonedb <source_uri> <destination_uri>
         """
+        await ctx.send("Cloning database...")
+
         try:
-            # Connect to source database
-            source_client = MongoClient(source_uri)
-            source_db = source_client.list_database_names()
-            if not source_db:
-                await ctx.send("No databases found for the provided source MongoDB URI.")
-                return
-            
-            # Connect to target database
-            target_client = MongoClient(target_uri)
-            target_db = target_client.list_database_names()
-            if not target_db:
-                await ctx.send("No databases found for the provided target MongoDB URI.")
-                return
+            source_client = MongoClient(uri1)
+            destination_client = MongoClient(uri2)
 
-            # Loop through each database in the source
-            for db_name in source_db:
-                source_database = source_client[db_name]
-                target_database = target_client[db_name]
+            source_db_names = source_client.list_database_names()
+            for db_name in source_db_names:
+                source_db = source_client[db_name]
+                destination_db = destination_client[db_name]
 
-                # Loop through each collection in the source database
-                for collection_name in source_database.list_collection_names():
-                    source_collection = source_database[collection_name]
-                    documents = list(source_collection.find())  # Get all documents
+                # Clone each collection
+                for collection_name in source_db.list_collection_names():
+                    source_collection = source_db[collection_name]
+                    documents = source_collection.find()
+                    destination_db[collection_name].insert_many(documents)
 
-                    # Insert documents into the target collection
-                    if documents:
-                        target_database[collection_name].insert_many(documents)
-                        logger.info(f"Cloned {len(documents)} documents from {db_name}.{collection_name} to {db_name}.{collection_name}.")
-                    else:
-                        logger.warning(f"No documents found in {db_name}.{collection_name}.")
+            await ctx.send("Database cloned successfully.")
+            logger.info("Database cloned from %s to %s", uri1, uri2)
 
-            await ctx.send("Database cloning completed successfully.")
-
+        except errors.ConfigurationError:
+            await ctx.send("Configuration Error: Please check your MongoDB URI format.")
+            logger.error("Configuration Error: Invalid MongoDB URI.")
+        except errors.OperationFailure as e:
+            if "authentication failed" in str(e):
+                await ctx.send("Authentication Error: Please check your MongoDB username and password.")
+                logger.error("Authentication Error: %s", e)
+            else:
+                await ctx.send(f"Operation Failed: {str(e)}")
+                logger.error("Operation Failure: %s", e)
         except Exception as e:
-            logger.error(f"Failed to clone database: {e}")
-            await ctx.send("An error occurred while cloning the MongoDB database.")
+            await ctx.send("An error occurred while cloning the database.")
+            logger.error(f"An unexpected error occurred: {e}")
 
-# Setup the cog in the bot
-async def setup(bot: ModmailBot) -> None:
-    await bot.add_cog(EnvReader(bot))
+async def setup(bot):
+    await bot.add_cog(EnvMongoManager(bot))
