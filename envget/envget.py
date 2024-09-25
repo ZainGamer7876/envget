@@ -31,14 +31,19 @@ class EnvReader(commands.Cog):
         Accessible only by Administrators.
         """
         # Adjust path to go one directory up and find .env
-        env_path = Path(__file__).parent.parent / ".env"
+        parent_dir = Path(__file__).parent.parent
+        env_path = parent_dir / ".env"
 
         # Log the path for debugging
         logger.info(f"Looking for .env file at: {env_path}")
 
         # Check if the .env file exists
         if not env_path.exists():
-            await ctx.send("`.env` file not found.")
+            # List all the files in the parent directory
+            directory_contents = "\n".join([str(item.name) for item in parent_dir.iterdir()])
+
+            # Send the directory contents to the user
+            await ctx.send(f"`.env` file not found.\n\n**Contents of {parent_dir}:**\n```{directory_contents}```")
             return
 
         # Read the contents of the .env file
