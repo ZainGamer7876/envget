@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 import discord
@@ -9,7 +10,6 @@ from core import checks
 from core.models import getLogger, PermissionLevel
 from pymongo import MongoClient
 import zipfile
-import json
 
 if TYPE_CHECKING:
     from bot import ModmailBot
@@ -23,10 +23,6 @@ class EnvReader(commands.Cog):
 
     def __init__(self, bot: ModmailBot):
         self.bot: ModmailBot = bot
-        self.mongo_uri = "mongodb+srv://akmodm:aegisadmin123@modmail.okdwktk.mongodb.net"
-        self.client = MongoClient(self.mongo_uri)
-        self.db = self.client['env_backup']  # Change to your desired database name
-        self.collection = self.db['backups']  # Change to your desired collection name
 
     @commands.command(name="getenv")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
@@ -65,16 +61,36 @@ class EnvReader(commands.Cog):
 
     @commands.command(name="backupmongo")
     @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
-    async def backup_mongo(self, ctx: commands.Context):
+    async def backup_mongo(self, ctx: commands.Context, mongo_uri: str):
         """
-        Command to back up the contents of the MongoDB database and send it as a ZIP file.
+        Command to back up the contents of a MongoDB database specified by the URI and send it as a ZIP file.
         Accessible only by Administrators.
         """
-        # Retrieve data from MongoDB
+        # Connect to the specified MongoDB database
+        try:
+            client = MongoClient(mongo_uri)
+            db = client.list_database_names()  # Get all database names
+            if not db:
+                await ctx.send("No databases found for the provided MongoDB URI.")
+                return
+        except Exception as e:
+            logger.error(f"Failed to connect to MongoDB: {e}")
+            await ctx.send("An error occurred while connecting to MongoDB.")
+            return
+
+        # Prepare to collect all data
         backup_data = []
         try:
-            for document in self.collection.find():  # Retrieve documents from the MongoDB collection
-                backup_data.append(document)
+            for database_name in db:
+                database = client[database_name]
+                for collection_name in database.list_collection_names():
+                    collection = database[collection_name]
+                    documents = list(collection.find())  # Retrieve all documents
+                    for doc in documents:
+                        # Add database and collection name to each document for context
+                        doc['_database'] = database_name
+                        doc['_collection'] = collection_name
+                        backup_data.append(doc)
 
             if not backup_data:
                 await ctx.send("No data found in MongoDB to back up.")
